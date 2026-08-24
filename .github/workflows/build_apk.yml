@@ -1,0 +1,80 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  export_android:
+    runs-on: ubuntu-latest
+    name: Export Android APK
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Generate Debug Keystore
+        run: |
+          keytool -genkey -v -keystore /home/runner/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Configure Project Settings (Portrait Lock & ETC2/ASTC)
+        run: |
+          # 1. Force Portrait Orientation & Canvas Scaling in project.godot
+          if grep -q "\[display\]" project.godot; then
+            sed -i '/\[display\]/a window/handheld/orientation=1\nwindow/stretch/mode="canvas_items"\nwindow/stretch/aspect="expand"' project.godot
+          else
+            printf "\n[display]\nwindow/size/viewport_width=720\nwindow/size/viewport_height=1280\nwindow/handheld/orientation=1\nwindow/stretch/mode=\"canvas_items\"\nwindow/stretch/aspect=\"expand\"\n" >> project.godot
+          fi
+
+          # 2. Enable ETC2/ASTC mobile texture compression
+          if grep -q "\[rendering\]" project.godot; then
+            sed -i '/\[rendering\]/a textures/vram_compression/import_etc2_astc=true' project.godot
+          else
+            printf "\n[rendering]\ntextures/vram_compression/import_etc2_astc=true\n" >> project.godot
+          fi
+
+          # 3. Inject debug keystore into export_presets.cfg
+          sed -i 's|keystore/debug=""|keystore/debug="/home/runner/debug.keystore"|g' export_presets.cfg || true
+          sed -i 's|keystore/debug_user=""|keystore/debug_user="androiddebugkey"|g' export_presets.cfg || true
+          sed -i 's|keystore/debug_password=""|keystore/debug_password="android"|g' export_presets.cfg || true
+
+      - name: Configure Godot Editor Settings
+        run: |
+          mkdir -p ~/.config/godot
+          cat <<EOF > ~/.config/godot/editor_settings-4.tres
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_SDK_ROOT"
+          export/android/debug_keystore = "/home/runner/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          EOF
+
+      - name: Export Godot 4.7.2 Android APK
+        uses: firebelley/godot-export@v5.2.1
+        with:
+          godot_executable_download_url: https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip
+          godot_export_templates_download_url: https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_export_templates.tpz
+          relative_project_path: ./
+          archive_output: false
+          use_preset_export_path: false
+          export_debug: true
+        env:
+          EXPORT_PRESET_NAME: Android
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PopDarts-Android-APK
+          path: /home/runner/.local/share/godot/builds/**/*.apk
